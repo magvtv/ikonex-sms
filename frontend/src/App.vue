@@ -431,43 +431,8 @@ const toggleSidebarMobile = () => {
    ========================================================================== */
 
 /* 1. Tablet Resolution (768px to 1024px) */
-@media (min-width: 768px) and (max-width: 1024px) {
-  :root {
-    --sidebar-width: var(--sidebar-collapsed-width);
-  }
-  
-  .sidebar-header {
-    justify-content: center;
-    padding: 0;
-  }
-  
-  .logo-text,
-  .user-info,
-  .nav-text {
-    display: none;
-  }
-  
-  .user-profile {
-    justify-content: center;
-    padding: 1rem 0;
-  }
-  
-  .sidebar-nav {
-    align-items: center;
-    padding: 0;
-  }
-  
-  .nav-link {
-    justify-content: center;
-    width: 48px;
-    height: 48px;
-    padding: 0;
-    border-radius: var(--border-radius-sm);
-  }
-}
-
-/* 2. Mobile Viewports (< 768px) */
-@media (max-width: 767.98px) {
+/* Mobile & Tablet Viewports (< 1024px) */
+@media (max-width: 1024px) {
   .sidebar {
     transform: translateX(-100%);
   }

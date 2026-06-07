@@ -647,10 +647,13 @@ const deleteStudent = async (id: string) => {
   to { transform: rotate(360deg); }
 }
 
-.no-records {
-  text-align: center;
+.directory-table td.no-records {
+  text-align: center !important;
   color: var(--text-secondary);
-  padding: 32px !important;
+  padding: 32px 16px !important;
+}
+.directory-table td.no-records::before {
+  display: none;
 }
 
 /* Small Viewports - Mobile Table Restructure (< 768px) */
