@@ -1,0 +1,50 @@
+/* Responsive design tokens and color palettes */
+:root {
+  /* Colors */
+  --bg-primary: #f4f6fa;
+  --bg-secondary: #ffffff;
+  --bg-hover: #f8fafc;
+  
+  --text-primary: #1e293b;
+  --text-secondary: #64748b;
+  --text-muted: #94a3b8;
+  
+  --color-primary: #0f77ff;
+  --color-primary-hover: #0066eb;
+  --color-primary-light: rgba(15, 119, 255, 0.08);
+  
+  --color-success: #10b981;
+  --color-success-bg: #e6f7f0;
+  --color-success-text: #047857;
+  
+  --color-danger: #ef4444;
+  --color-danger-bg: #fdf2f2;
+  --color-danger-text: #b91c1c;
+  
+  --color-warning: #f59e0b;
+  --color-warning-bg: #fffbeb;
+  --color-warning-text: #b45309;
+  
+  --color-info: #8b5cf6;
+  --color-info-bg: #f5f3ff;
+  --color-info-text: #6d28d9;
+
+  --border-color: #e2e8f0;
+
+  /* Layout Spacing */
+  --sidebar-width: 260px;
+  --sidebar-collapsed-width: 76px;
+  --topbar-height: 70px;
+  --border-radius-lg: 16px;
+  --border-radius-md: 12px;
+  --border-radius-sm: 8px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 20px -2px rgba(0, 0, 0, 0.05), 0 2px 8px -1px rgba(0, 0, 0, 0.03);
+  --shadow-lg: 0 10px 25px -5px rgba(0, 0, 0, 0.04), 0 8px 10px -6px rgba(0, 0, 0, 0.04);
+
+  /* Transitions */
+  --transition-fast: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-normal: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
