@@ -11,6 +11,10 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
+app.get("/", (_req, res) => {
+  res.json({ message: "Ikonex SMS API is running successfully!" });
+});
+
 // Helper to assign grade letter from score
 function getGrade(score: number, gradingScales: any[]): string {
   const scale = gradingScales.find(
