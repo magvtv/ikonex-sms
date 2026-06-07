@@ -1,8 +1,7 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import { v4 as uuidv4 } from "uuid";
-import db from "./database/db";
+import { supabase } from "./database/supabase";
 
 dotenv.config();
 
@@ -12,52 +11,57 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
+// Helper to assign grade letter from score
+function getGrade(score: number, gradingScales: any[]): string {
+  const scale = gradingScales.find(
+    (g) => score >= Number(g.min_score) && score <= Number(g.max_score)
+  );
+  return scale ? scale.grade : "--";
+}
+
 // ---------------------------------------------------------
 // DASHBOARD STATS
 // ---------------------------------------------------------
-app.get("/api/dashboard/stats", async (req, res) => {
+app.get("/api/dashboard/stats", async (_req, res) => {
   try {
-    const studentCount = await db("students").count("id as count").first();
-    const streamCount = await db("streams").count("id as count").first();
-    const subjectCount = await db("subjects").count("id as count").first();
-    const avgScoreResult = await db("assessment_scores").avg("score as avg").first();
-    
-    // Fetch all grading scales to calculate distribution
-    const gradingScales = await db("grading_scales").select("*");
-    const scores = await db("assessment_scores").select("score");
+    const [
+      { count: students },
+      { count: streams },
+      { count: subjects },
+      { data: scores },
+      { data: gradingScales },
+    ] = await Promise.all([
+      supabase.from("students").select("*", { count: "exact", head: true }),
+      supabase.from("streams").select("*", { count: "exact", head: true }),
+      supabase.from("subjects").select("*", { count: "exact", head: true }),
+      supabase.from("assessment_scores").select("score"),
+      supabase.from("grading_scales").select("*"),
+    ]);
 
-    let highCount = 0; // A, A-, B+, B, B-
-    let midCount = 0;  // C+, C, C-, D+, D, D-
-    let lowCount = 0;  // E
-
-    scores.forEach((s) => {
-      const val = Number(s.score);
-      const gradeScale = gradingScales.find(g => val >= Number(g.min_score) && val <= Number(g.max_score));
-      if (gradeScale) {
-        const g = gradeScale.grade;
-        if (["A", "A-", "B+", "B", "B-"].includes(g)) {
-          highCount++;
-        } else if (["C+", "C", "C-", "D+", "D", "D-"].includes(g)) {
-          midCount++;
-        } else {
-          lowCount++;
-        }
-      }
+    let highCount = 0, midCount = 0, lowCount = 0;
+    const scoreList = scores || [];
+    scoreList.forEach((s) => {
+      const g = getGrade(Number(s.score), gradingScales || []);
+      if (["A", "A-", "B+", "B", "B-"].includes(g)) highCount++;
+      else if (["C+", "C", "C-", "D+", "D", "D-"].includes(g)) midCount++;
+      else lowCount++;
     });
 
-    const totalGraded = scores.length || 1;
-    const distribution = {
-      high: Math.round((highCount / totalGraded) * 100),
-      mid: Math.round((midCount / totalGraded) * 100),
-      low: Math.round((lowCount / totalGraded) * 100),
-    };
+    const avg = scoreList.length
+      ? scoreList.reduce((acc, s) => acc + Number(s.score), 0) / scoreList.length
+      : 0;
+    const total = scoreList.length || 1;
 
     res.json({
-      students: studentCount?.count || 0,
-      streams: streamCount?.count || 0,
-      subjects: subjectCount?.count || 0,
-      averageScore: avgScoreResult?.avg ? Number(Number(avgScoreResult.avg).toFixed(2)) : 0,
-      distribution
+      students: students ?? 0,
+      streams: streams ?? 0,
+      subjects: subjects ?? 0,
+      averageScore: Number(avg.toFixed(2)),
+      distribution: {
+        high: Math.round((highCount / total) * 100),
+        mid: Math.round((midCount / total) * 100),
+        low: Math.round((lowCount / total) * 100),
+      },
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -67,19 +71,18 @@ app.get("/api/dashboard/stats", async (req, res) => {
 // ---------------------------------------------------------
 // STUDENTS CRUD
 // ---------------------------------------------------------
-app.get("/api/students", async (req, res) => {
+app.get("/api/students", async (_req, res) => {
   try {
-    const students = await db("students")
-      .leftJoin("streams", "students.stream_id", "streams.id")
-      .select(
-        "students.id",
-        "students.first_name",
-        "students.last_name",
-        "students.admission_number",
-        "students.stream_id",
-        "streams.name as stream_name"
-      )
-      .orderBy("students.admission_number", "asc");
+    const { data, error } = await supabase
+      .from("students")
+      .select("id, first_name, last_name, admission_number, stream_id, streams(name)")
+      .order("admission_number");
+    if (error) throw error;
+    const students = (data || []).map((s: any) => ({
+      ...s,
+      stream_name: s.streams?.name ?? null,
+      streams: undefined,
+    }));
     res.json(students);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -89,18 +92,16 @@ app.get("/api/students", async (req, res) => {
 app.post("/api/students", async (req, res) => {
   try {
     const { first_name, last_name, admission_number, stream_id } = req.body;
-    if (!first_name || !last_name || !admission_number) {
+    if (!first_name || !last_name || !admission_number)
       return res.status(400).json({ error: "Missing required student details" });
-    }
-    const id = uuidv4();
-    await db("students").insert({
-      id,
-      first_name,
-      last_name,
-      admission_number,
-      stream_id: stream_id || null
-    });
-    res.status(201).json({ id, first_name, last_name, admission_number, stream_id });
+
+    const { data, error } = await supabase
+      .from("students")
+      .insert({ first_name, last_name, admission_number, stream_id: stream_id || null })
+      .select()
+      .single();
+    if (error) throw error;
+    res.status(201).json(data);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -110,15 +111,11 @@ app.put("/api/students/:id", async (req, res) => {
   try {
     const { id } = req.params;
     const { first_name, last_name, admission_number, stream_id } = req.body;
-    await db("students")
-      .where({ id })
-      .update({
-        first_name,
-        last_name,
-        admission_number,
-        stream_id: stream_id || null,
-        updated_at: db.fn.now()
-      });
+    const { error } = await supabase
+      .from("students")
+      .update({ first_name, last_name, admission_number, stream_id: stream_id || null, updated_at: new Date().toISOString() })
+      .eq("id", id);
+    if (error) throw error;
     res.json({ message: "Student updated successfully" });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -127,8 +124,8 @@ app.put("/api/students/:id", async (req, res) => {
 
 app.delete("/api/students/:id", async (req, res) => {
   try {
-    const { id } = req.params;
-    await db("students").where({ id }).del();
+    const { error } = await supabase.from("students").delete().eq("id", req.params.id);
+    if (error) throw error;
     res.json({ message: "Student deleted successfully" });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -138,19 +135,21 @@ app.delete("/api/students/:id", async (req, res) => {
 // ---------------------------------------------------------
 // STREAMS CRUD
 // ---------------------------------------------------------
-app.get("/api/streams", async (req, res) => {
+app.get("/api/streams", async (_req, res) => {
   try {
-    const streams = await db("streams")
-      .leftJoin("students", "streams.id", "students.stream_id")
-      .select(
-        "streams.id",
-        "streams.name",
-        "streams.grade_level",
-        db.raw("count(students.id) as student_count")
-      )
-      .groupBy("streams.id")
-      .orderBy("streams.name", "asc");
-    res.json(streams);
+    const { data: streams, error } = await supabase
+      .from("streams")
+      .select("id, name, grade_level")
+      .order("name");
+    if (error) throw error;
+
+    const { data: students } = await supabase.from("students").select("stream_id");
+    const countMap: Record<string, number> = {};
+    (students || []).forEach((s: any) => {
+      if (s.stream_id) countMap[s.stream_id] = (countMap[s.stream_id] || 0) + 1;
+    });
+
+    res.json((streams || []).map((s) => ({ ...s, student_count: countMap[s.id] || 0 })));
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -159,12 +158,12 @@ app.get("/api/streams", async (req, res) => {
 app.post("/api/streams", async (req, res) => {
   try {
     const { name, grade_level } = req.body;
-    if (!name || !grade_level) {
+    if (!name || !grade_level)
       return res.status(400).json({ error: "Missing required stream details" });
-    }
-    const id = uuidv4();
-    await db("streams").insert({ id, name, grade_level });
-    res.status(201).json({ id, name, grade_level });
+    const { data, error } = await supabase
+      .from("streams").insert({ name, grade_level }).select().single();
+    if (error) throw error;
+    res.status(201).json(data);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -172,11 +171,10 @@ app.post("/api/streams", async (req, res) => {
 
 app.put("/api/streams/:id", async (req, res) => {
   try {
-    const { id } = req.params;
     const { name, grade_level } = req.body;
-    await db("streams")
-      .where({ id })
-      .update({ name, grade_level, updated_at: db.fn.now() });
+    const { error } = await supabase
+      .from("streams").update({ name, grade_level, updated_at: new Date().toISOString() }).eq("id", req.params.id);
+    if (error) throw error;
     res.json({ message: "Stream updated successfully" });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -185,8 +183,8 @@ app.put("/api/streams/:id", async (req, res) => {
 
 app.delete("/api/streams/:id", async (req, res) => {
   try {
-    const { id } = req.params;
-    await db("streams").where({ id }).del();
+    const { error } = await supabase.from("streams").delete().eq("id", req.params.id);
+    if (error) throw error;
     res.json({ message: "Stream deleted successfully" });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -196,19 +194,18 @@ app.delete("/api/streams/:id", async (req, res) => {
 // ---------------------------------------------------------
 // SUBJECTS CRUD
 // ---------------------------------------------------------
-app.get("/api/subjects", async (req, res) => {
+app.get("/api/subjects", async (_req, res) => {
   try {
-    const subjects = await db("subjects").select("*").orderBy("name", "asc");
-    
-    // Map subjects to their streams
-    for (const sub of subjects) {
-      const mappedStreams = await db("stream_subjects")
-        .join("streams", "stream_subjects.stream_id", "streams.id")
-        .where("stream_subjects.subject_id", sub.id)
-        .select("streams.id", "streams.name");
-      sub.streams = mappedStreams;
-    }
-    
+    const { data, error } = await supabase
+      .from("subjects")
+      .select("id, name, code, stream_subjects(stream_id, streams(id, name))")
+      .order("name");
+    if (error) throw error;
+
+    const subjects = (data || []).map((s: any) => ({
+      id: s.id, name: s.name, code: s.code,
+      streams: (s.stream_subjects || []).map((ss: any) => ss.streams).filter(Boolean),
+    }));
     res.json(subjects);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -218,22 +215,18 @@ app.get("/api/subjects", async (req, res) => {
 app.post("/api/subjects", async (req, res) => {
   try {
     const { name, code, stream_ids } = req.body;
-    if (!name || !code) {
-      return res.status(400).json({ error: "Missing name or code" });
+    if (!name || !code) return res.status(400).json({ error: "Missing name or code" });
+
+    const { data, error } = await supabase
+      .from("subjects").insert({ name, code }).select().single();
+    if (error) throw error;
+
+    if (Array.isArray(stream_ids) && stream_ids.length > 0) {
+      await supabase.from("stream_subjects").insert(
+        stream_ids.map((sid: string) => ({ stream_id: sid, subject_id: data.id }))
+      );
     }
-    const id = uuidv4();
-    await db.transaction(async (trx) => {
-      await trx("subjects").insert({ id, name, code });
-      
-      if (Array.isArray(stream_ids) && stream_ids.length > 0) {
-        const pivotEntries = stream_ids.map(streamId => ({
-          stream_id: streamId,
-          subject_id: id
-        }));
-        await trx("stream_subjects").insert(pivotEntries);
-      }
-    });
-    res.status(201).json({ id, name, code });
+    res.status(201).json(data);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -243,18 +236,16 @@ app.put("/api/subjects/:id", async (req, res) => {
   try {
     const { id } = req.params;
     const { name, code, stream_ids } = req.body;
-    await db.transaction(async (trx) => {
-      await trx("subjects").where({ id }).update({ name, code, updated_at: trx.fn.now() });
-      await trx("stream_subjects").where({ subject_id: id }).del();
-      
-      if (Array.isArray(stream_ids) && stream_ids.length > 0) {
-        const pivotEntries = stream_ids.map(streamId => ({
-          stream_id: streamId,
-          subject_id: id
-        }));
-        await trx("stream_subjects").insert(pivotEntries);
-      }
-    });
+    const { error } = await supabase
+      .from("subjects").update({ name, code, updated_at: new Date().toISOString() }).eq("id", id);
+    if (error) throw error;
+
+    await supabase.from("stream_subjects").delete().eq("subject_id", id);
+    if (Array.isArray(stream_ids) && stream_ids.length > 0) {
+      await supabase.from("stream_subjects").insert(
+        stream_ids.map((sid: string) => ({ stream_id: sid, subject_id: id }))
+      );
+    }
     res.json({ message: "Subject updated successfully" });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -263,8 +254,8 @@ app.put("/api/subjects/:id", async (req, res) => {
 
 app.delete("/api/subjects/:id", async (req, res) => {
   try {
-    const { id } = req.params;
-    await db("subjects").where({ id }).del();
+    const { error } = await supabase.from("subjects").delete().eq("id", req.params.id);
+    if (error) throw error;
     res.json({ message: "Subject deleted successfully" });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -272,152 +263,93 @@ app.delete("/api/subjects/:id", async (req, res) => {
 });
 
 // ---------------------------------------------------------
-// SCORES CRUD & LISTING
+// SCORES
 // ---------------------------------------------------------
 app.get("/api/scores", async (req, res) => {
   try {
-    const { stream_id, subject_id, academic_term, assessment_type } = req.query;
-    
-    // Base query to list students in the stream
-    let query = db("students")
-      .leftJoin("streams", "students.stream_id", "streams.id")
-      .select(
-        "students.id as student_id",
-        "students.first_name",
-        "students.last_name",
-        "students.admission_number",
-        "streams.name as stream_name"
-      );
+    const { stream_id, subject_id, academic_term, assessment_type } = req.query as any;
 
-    if (stream_id) {
-      query = query.where("students.stream_id", stream_id as string);
-    }
+    let studentsQuery = supabase
+      .from("students")
+      .select("id, first_name, last_name, admission_number, streams(name)")
+      .order("admission_number");
+    if (stream_id) studentsQuery = studentsQuery.eq("stream_id", stream_id);
 
-    const students = await query.orderBy("students.admission_number", "asc");
+    const [{ data: students }, { data: scores }, { data: gradingScales }] = await Promise.all([
+      studentsQuery,
+      supabase.from("assessment_scores").select("*")
+        .eq("subject_id", subject_id || "")
+        .eq("academic_term", academic_term || "")
+        .eq("assessment_type", assessment_type || ""),
+      supabase.from("grading_scales").select("*"),
+    ]);
 
-    // Fetch corresponding scores
-    const scores = await db("assessment_scores")
-      .where({
-        subject_id: (subject_id as string) || "",
-        academic_term: (academic_term as string) || "",
-        assessment_type: (assessment_type as string) || ""
-      });
-
-    // Fetch grading scales to map scores to letters
-    const gradingScales = await db("grading_scales").select("*");
-
-    const result = students.map((student) => {
-      const match = scores.find(s => s.student_id === student.student_id);
-      let grade = "--";
-      if (match && match.score !== null) {
-        const val = Number(match.score);
-        const scale = gradingScales.find(g => val >= Number(g.min_score) && val <= Number(g.max_score));
-        if (scale) grade = scale.grade;
-      }
-
+    const result = (students || []).map((student: any) => {
+      const match = (scores || []).find((s) => s.student_id === student.id);
+      const grade = match ? getGrade(Number(match.score), gradingScales || []) : "--";
       return {
-        ...student,
-        score_id: match ? match.id : null,
+        student_id: student.id,
+        first_name: student.first_name,
+        last_name: student.last_name,
+        admission_number: student.admission_number,
+        stream_name: student.streams?.name ?? null,
+        score_id: match?.id ?? null,
         score: match ? Number(match.score) : null,
         grade,
-        status: match ? "Completed" : "Pending"
+        status: match ? "Completed" : "Pending",
       };
     });
-
     res.json(result);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// Get recent scores joined with students, subjects, streams
-app.get("/api/scores/recent", async (req, res) => {
+app.get("/api/scores/recent", async (_req, res) => {
   try {
-    const scores = await db("assessment_scores")
-      .join("students", "assessment_scores.student_id", "students.id")
-      .join("subjects", "assessment_scores.subject_id", "subjects.id")
-      .leftJoin("streams", "students.stream_id", "streams.id")
-      .select(
-        "students.first_name",
-        "students.last_name",
-        "students.admission_number",
-        "streams.name as stream_name",
-        "subjects.name as subject_name",
-        "assessment_scores.assessment_type",
-        "assessment_scores.score"
-      )
-      .orderBy("assessment_scores.created_at", "desc")
+    const { data, error } = await supabase
+      .from("assessment_scores")
+      .select("score, assessment_type, students(first_name, last_name, admission_number, streams(name)), subjects(name)")
+      .order("created_at", { ascending: false })
       .limit(10);
+    if (error) throw error;
 
-    const gradingScales = await db("grading_scales").select("*");
-
-    const formatted = scores.map(s => {
-      const val = Number(s.score);
-      const scale = gradingScales.find(g => val >= Number(g.min_score) && val <= Number(g.max_score));
-      return {
-        name: `${s.first_name} ${s.last_name}`,
-        adm: s.admission_number,
-        stream: s.stream_name || "N/A",
-        subject: s.subject_name,
-        type: s.assessment_type,
-        score: val,
-        grade: scale ? scale.grade : "--",
-        status: "Completed"
-      };
-    });
-
+    const { data: gradingScales } = await supabase.from("grading_scales").select("*");
+    const formatted = (data || []).map((s: any) => ({
+      name: `${s.students.first_name} ${s.students.last_name}`,
+      adm: s.students.admission_number,
+      stream: s.students.streams?.name ?? "N/A",
+      subject: s.subjects.name,
+      type: s.assessment_type,
+      score: Number(s.score),
+      grade: getGrade(Number(s.score), gradingScales || []),
+      status: "Completed",
+    }));
     res.json(formatted);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// Bulk upsert scores for a class matrix
 app.post("/api/scores/bulk", async (req, res) => {
   try {
     const { subject_id, academic_term, assessment_type, scores } = req.body;
-    
-    if (!subject_id || !academic_term || !assessment_type || !Array.isArray(scores)) {
+    if (!subject_id || !academic_term || !assessment_type || !Array.isArray(scores))
       return res.status(400).json({ error: "Invalid scoring matrix payload" });
-    }
 
-    await db.transaction(async (trx) => {
-      for (const entry of scores) {
-        const { student_id, score } = entry;
-        
-        // If score is null or empty, delete any existing grade entry
-        if (score === null || score === undefined || score === "") {
-          await trx("assessment_scores")
-            .where({ student_id, subject_id, academic_term, assessment_type })
-            .del();
-          continue;
-        }
-
-        // Check if there is an existing entry
-        const existing = await trx("assessment_scores")
-          .where({ student_id, subject_id, academic_term, assessment_type })
-          .first();
-
-        if (existing) {
-          await trx("assessment_scores")
-            .where({ id: existing.id })
-            .update({
-              score: Number(score),
-              updated_at: trx.fn.now()
-            });
-        } else {
-          await trx("assessment_scores").insert({
-            id: uuidv4(),
-            student_id,
-            subject_id,
-            assessment_type,
-            academic_term,
-            score: Number(score)
-          });
-        }
+    for (const entry of scores) {
+      const { student_id, score } = entry;
+      if (score === null || score === undefined || score === "") {
+        await supabase.from("assessment_scores").delete().match({
+          student_id, subject_id, academic_term, assessment_type,
+        });
+      } else {
+        await supabase.from("assessment_scores").upsert(
+          { student_id, subject_id, academic_term, assessment_type, score: Number(score), updated_at: new Date().toISOString() },
+          { onConflict: "student_id,subject_id,assessment_type,academic_term" }
+        );
       }
-    });
-
+    }
     res.json({ message: "Scores updated successfully" });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -425,132 +357,49 @@ app.post("/api/scores/bulk", async (req, res) => {
 });
 
 // ---------------------------------------------------------
-// REPORTS & ANALYTICS ROUTE (using Window functions for ranking)
+// REPORTS
 // ---------------------------------------------------------
 app.get("/api/reports/rankings", async (req, res) => {
   try {
-    const { academic_term, stream_id } = req.query;
-    
-    if (!academic_term) {
+    const { academic_term, stream_id } = req.query as any;
+    if (!academic_term)
       return res.status(400).json({ error: "Academic term is required for analytics" });
-    }
 
-    // Rank students by their mean score in the specified term.
-    // We utilize SQL Window functions (RANK() OVER) to sort and rank students.
-    let rawQuery = `
-      SELECT 
-        s.id as student_id,
-        s.first_name,
-        s.last_name,
-        s.admission_number,
-        st.name as stream_name,
-        avg(as_sc.score) as mean_score,
-        RANK() OVER (ORDER BY avg(as_sc.score) DESC) as term_rank
-      FROM students s
-      JOIN streams st ON s.stream_id = st.id
-      JOIN assessment_scores as_sc ON s.id = as_sc.student_id
-      WHERE as_sc.academic_term = ?
-    `;
-
-    const params: any[] = [academic_term];
-
-    if (stream_id) {
-      rawQuery += ` AND s.stream_id = ? `;
-      params.push(stream_id);
-    }
-
-    rawQuery += `
-      GROUP BY s.id
-      ORDER BY mean_score DESC
-    `;
-
-    const rankings = await db.raw(rawQuery, params);
-    
-    // Fetch grading scales to assign overall grade
-    const gradingScales = await db("grading_scales").select("*");
-
-    const formattedRankings = rankings[0].map((r: any) => {
-      const mean = Number(r.mean_score);
-      const scale = gradingScales.find(g => mean >= Number(g.min_score) && mean <= Number(g.max_score));
-      return {
-        ...r,
-        mean_score: Number(mean.toFixed(2)),
-        overall_grade: scale ? scale.grade : "--"
-      };
+    const { data, error } = await supabase.rpc("get_rankings", {
+      p_academic_term: academic_term,
+      p_stream_id: stream_id || null,
     });
+    if (error) throw error;
 
-    res.json(formattedRankings);
+    const { data: gradingScales } = await supabase.from("grading_scales").select("*");
+    const formatted = (data || []).map((r: any) => ({
+      ...r,
+      mean_score: Number(Number(r.mean_score).toFixed(2)),
+      overall_grade: getGrade(Number(r.mean_score), gradingScales || []),
+    }));
+    res.json(formatted);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// mock PDF download endpoint
 app.get("/api/reports/pdf/:studentId", async (req, res) => {
   try {
     const { studentId } = req.params;
     const { academic_term } = req.query;
-
-    const student = await db("students")
-      .leftJoin("streams", "students.stream_id", "streams.id")
-      .where("students.id", studentId)
-      .select("students.*", "streams.name as stream_name")
-      .first();
-
-    if (!student) {
-      return res.status(404).json({ error: "Student not found" });
-    }
+    const { data: student, error } = await supabase
+      .from("students")
+      .select("*, streams(name)")
+      .eq("id", studentId)
+      .single();
+    if (error || !student) return res.status(404).json({ error: "Student not found" });
 
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename=Report_${student.admission_number}.pdf`);
-    
-    // For this assessment context, we will send back a text-based dummy PDF representation
-    // to act as a placeholder for report files.
-    res.send(`%PDF-1.4
-1 0 obj
-<< /Type /Catalog /Pages 2 0 R >>
-endobj
-2 0 obj
-<< /Type /Pages /Kids [3 0 R] /Count 1 >>
-endobj
-3 0 obj
-<< /Type /Page /Parent 2 0 R /Resources << >> /Contents 4 0 R >>
-endobj
-4 0 obj
-<< /Length 100 >>
-stream
-BT
-/F1 12 Tf
-100 700 Td
-(Ikonex Academy - Report Card) Tj
-0 -20 Td
-(Name: ${student.first_name} ${student.last_name}) Tj
-0 -20 Td
-(Adm No: ${student.admission_number}) Tj
-0 -20 Td
-(Stream: ${student.stream_name || "N/A"}) Tj
-0 -20 Td
-(Term: ${academic_term || "All Terms"}) Tj
-ET
-endstream
-endobj
-xref
-0 5
-0000000000 65535 f 
-0000000009 00000 n 
-0000000056 00000 n 
-0000000111 00000 n 
-0000000185 00000 n 
-trailer
-<< /Size 5 /Root 1 0 R >>
-startxref
-335
-%%EOF`);
+    res.send(`%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /Resources << >> /Contents 4 0 R >>\nendobj\n4 0 obj\n<< /Length 100 >>\nstream\nBT\n/F1 12 Tf\n100 700 Td\n(Ikonex Academy - Report Card) Tj\n0 -20 Td\n(Name: ${student.first_name} ${student.last_name}) Tj\n0 -20 Td\n(Adm No: ${student.admission_number}) Tj\n0 -20 Td\n(Stream: ${(student as any).streams?.name ?? "N/A"}) Tj\n0 -20 Td\n(Term: ${academic_term || "All Terms"}) Tj\nET\nendstream\nendobj\ntrailer\n<< /Size 5 /Root 1 0 R >>\n%%EOF`);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Backend server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Backend server running on port ${PORT}`));
